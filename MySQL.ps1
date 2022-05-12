@@ -1,5 +1,5 @@
 #
-# MySQL.ps1 - IDM System PowerShell Script for Microsoft SQL Server.
+# MySQL.ps1 - IDM System PowerShell Script for MySQL.
 #
 # Any IDM System PowerShell Script is dot-sourced in a separate PowerShell context, after
 # dot-sourcing the IDM Generic PowerShell Script '../Generic.ps1'.
