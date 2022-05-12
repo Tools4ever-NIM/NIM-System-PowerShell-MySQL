@@ -475,7 +475,6 @@ function Idm-Dispatcher {
                         FROM
                             $Class$filter
                     "
-                    $sql_command.CommandText | Out-File "C:\temp\debug.txt"
                     break
                 }
 
@@ -775,7 +774,6 @@ function Open-MySqlConnection {
     param (
         [string] $ConnectionParams
     )
-    Log info "OPENING CONNECTION!!!!!"
     $connection_params = ConvertFrom-Json2 $ConnectionParams
 
     $cs_builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
@@ -792,7 +790,6 @@ function Open-MySqlConnection {
     }
 
     $connection_string = $cs_builder.ConnectionString
-    Log info "DEBUG STRING HERE----------- $($connection_string)"
     if ($Global:MySqlConnection -and $connection_string -ne $Global:MySqlConnectionString) {
         Log info "MySqlConnection connection parameters changed"
         Close-MySqlConnection
