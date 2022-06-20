@@ -782,22 +782,22 @@ function Open-MySqlConnection {
         [string] $ConnectionParams
     )
     $connection_params = ConvertFrom-Json2 $ConnectionParams
-
-    $cs_builder = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
+    [void][System.Reflection.Assembly]::LoadFrom("$($connection_params.mysql_net_installpath)\MySql.Data.dll")
+    $cs_builder = New-Object MySql.Data.MySqlClient.MySqlConnectionStringBuilder
 
     # Use connection related parameters only
-    $cs_builder['Server']     = $connection_params.server
-    $cs_builder['Port']     = $connection_params.port
-    $cs_builder['Database'] = $connection_params.database
+    $cs_builder.Server     = $connection_params.server
+    $cs_builder.Port     = $connection_params.port
+    $cs_builder.Database = $connection_params.database
 
-    $cs_builder['User ID']  = $connection_params.username
-    $cs_builder['Password'] = $connection_params.password   
+    $cs_builder.UserID  = $connection_params.username
+    $cs_builder.Password = $connection_params.password   
 
     if ($connection_params.ssl_mode) {
-        $cs_builder['SslMode'] = 'Preferred'
+        $cs_builderSslMode = 'Preferred'
     }
 
-    $connection_string = $cs_builder.ConnectionString
+    $connection_string = $cs_builder.ConnectionString.ToString()
     if ($Global:MySqlConnection -and $connection_string -ne $Global:MySqlConnectionString) {
         Log info "MySqlConnection connection parameters changed"
         Close-MySqlConnection
@@ -815,7 +815,6 @@ function Open-MySqlConnection {
         Log info "Opening MySqlConnection '$connection_string'"
 
         try {
-            [void][System.Reflection.Assembly]::LoadFrom("$($connection_params.mysql_net_installpath)\MySql.Data.dll")
             $connection = New-Object MySql.Data.MySqlClient.MySqlConnection($connection_string)
             $connection.Open()
 
