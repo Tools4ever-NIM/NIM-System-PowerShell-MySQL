@@ -33,8 +33,15 @@ function Idm-SystemInfo {
                 name = 'server'
                 type = 'textbox'
                 label = 'Server'
-                description = 'Name of Microsoft SQL server'
+                description = 'Hostname/IP of server'
                 value = ''
+            }
+            @{
+                name = 'port'
+                type = 'textbox'
+                label = 'Port'
+                description = 'Port of Server'
+                value = '3306'
             }
             @{
                 name = 'ssl_mode'
@@ -780,6 +787,7 @@ function Open-MySqlConnection {
 
     # Use connection related parameters only
     $cs_builder['Server']     = $connection_params.server
+    $cs_builder['Port']     = $connection_params.port
     $cs_builder['Database'] = $connection_params.database
 
     $cs_builder['User ID']  = $connection_params.username
