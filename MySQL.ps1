@@ -54,7 +54,7 @@ function Idm-SystemInfo {
                 name = 'database'
                 type = 'textbox'
                 label = 'Database'
-                description = 'Name of Microsoft SQL database'
+                description = 'Name of database'
                 value = ''
             }
             @{
@@ -62,7 +62,7 @@ function Idm-SystemInfo {
                 type = 'textbox'
                 label = 'Username'
                 label_indent = $true
-                description = 'User account name to access Microsoft SQL server'
+                description = 'User account name to access server'
                 value = ''
                 hidden = 'use_svc_account_creds'
             }
@@ -72,7 +72,7 @@ function Idm-SystemInfo {
                 password = $true
                 label = 'Password'
                 label_indent = $true
-                description = 'User account password to access Microsoft SQL server'
+                description = 'User account password to access server'
                 value = ''
                 hidden = 'use_svc_account_creds'
             }
@@ -635,7 +635,6 @@ function Invoke-MySqlCommand {
     )
 
     # Streaming
-    # ERAM dbo.Files (426.977 rows) execution time: ?
     function Invoke-MySqlCommand-ExecuteReader {
         param (
             [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
@@ -664,7 +663,6 @@ function Invoke-MySqlCommand {
     }
 
     # Streaming
-    # ERAM dbo.Files (426.977 rows) execution time: 16.7 s
     function Invoke-MySqlCommand-ExecuteReader00 {
         param (
             [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
@@ -700,7 +698,6 @@ function Invoke-MySqlCommand {
     }
 
     # Streaming
-    # ERAM dbo.Files (426.977 rows) execution time: 01:11.9 s
     function Invoke-MySqlCommand-ExecuteReader01 {
         param (
             [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
@@ -724,7 +721,6 @@ function Invoke-MySqlCommand {
     }
 
     # Non-streaming (data stored in $data_table)
-    # ERAM dbo.Files (426.977 rows) execution time: 15.5 s
     function Invoke-MySqlCommand-DataAdapter-DataTable {
         param (
             [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
@@ -742,7 +738,6 @@ function Invoke-MySqlCommand {
     }
 
     # Non-streaming (data stored in $data_set)
-    # ERAM dbo.Files (426.977 rows) execution time: 14.8 s
     function Invoke-MySqlCommand-DataAdapter-DataSet {
         param (
             [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
