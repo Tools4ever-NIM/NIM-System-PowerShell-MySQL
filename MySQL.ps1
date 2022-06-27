@@ -512,7 +512,7 @@ function Idm-Dispatcher {
                     $filter = @($primary_keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
 
                     $sql_command.CommandText = "
-                        DELETE
+                        DELETE FROM
                             $Class
                         WHERE
                             $filter
