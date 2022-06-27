@@ -463,12 +463,13 @@ function Idm-Dispatcher {
                         VALUES (
                             $(@($function_params.Keys | ForEach-Object { AddParam-MySqlCommand $sql_command $function_params[$_] }) -join ', ')
                         );
-                        SELECT TOP(1)
+                        SELECT
                             $projection
                         FROM
                             $Class
                         WHERE
                             $filter
+                        LIMIT 1
                     "
                     break
                 }
@@ -489,18 +490,20 @@ function Idm-Dispatcher {
                     $filter = @($primary_keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
 
                     $sql_command.CommandText = "
-                        UPDATE TOP(1)
+                        UPDATE
                             $Class
                         SET
                             $(@($function_params.Keys | ForEach-Object { if ($_ -notin $primary_keys) { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" } }) -join ', ')
                         WHERE
-                            $filter;
-                        SELECT TOP(1)
+                            $filter
+                        LIMIT 1 ;
+                        SELECT
                             $(@($function_params.Keys | ForEach-Object { '`' + $_ + '`' }) -join ', ')
                         FROM
                             $Class
                         WHERE
                             $filter
+                        LIMIT 1
                     "
                     break
                 }
@@ -509,10 +512,11 @@ function Idm-Dispatcher {
                     $filter = @($primary_keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
 
                     $sql_command.CommandText = "
-                        DELETE TOP(1)
+                        DELETE
                             $Class
                         WHERE
                             $filter
+                        LIMIT 1
                     "
                     break
                 }
@@ -594,20 +598,22 @@ function DeParam-MySqlCommand {
                 'NULL'
             }
             else {
-                switch ($p.SqlDbType) {
+                switch ($p.MySqlDbType) {
                     { $_ -in @(
-                        [System.Data.SqlDbType]::Char
-                        [System.Data.SqlDbType]::Date
-                        [System.Data.SqlDbType]::DateTime
-                        [System.Data.SqlDbType]::DateTime2
-                        [System.Data.SqlDbType]::DateTimeOffset
-                        [System.Data.SqlDbType]::NChar
-                        [System.Data.SqlDbType]::NText
-                        [System.Data.SqlDbType]::NVarChar
-                        [System.Data.SqlDbType]::Text
-                        [System.Data.SqlDbType]::Time
-                        [System.Data.SqlDbType]::VarChar
-                        [System.Data.SqlDbType]::Xml
+                        [MySql.Data.MySqlClient.MySqlDbType]::VarString
+                        [MySql.Data.MySqlClient.MySqlDbType]::JSON
+                        [MySql.Data.MySqlClient.MySqlDbType]::Date
+                        [MySql.Data.MySqlClient.MySqlDbType]::Enum
+                        [MySql.Data.MySqlClient.MySqlDbType]::Set
+                        [MySql.Data.MySqlClient.MySqlDbType]::Timestamp
+                        [MySql.Data.MySqlClient.MySqlDbType]::String
+                        [MySql.Data.MySqlClient.MySqlDbType]::Text
+                        [MySql.Data.MySqlClient.MySqlDbType]::TinyText
+                        [MySql.Data.MySqlClient.MySqlDbType]::MediumText
+                        [MySql.Data.MySqlClient.MySqlDbType]::LongText
+                        [MySql.Data.MySqlClient.MySqlDbType]::VarBinary
+                        [MySql.Data.MySqlClient.MySqlDbType]::Time
+                        [MySql.Data.MySqlClient.MySqlDbType]::VarChar
                     )} {
                         "'" + $p.Value.ToString().Replace("'", "''") + "'"
                         break
@@ -639,12 +645,10 @@ function Invoke-MySqlCommand {
         param (
             [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
         )
-
         $data_reader = $SqlCommand.ExecuteReader()
         $column_names = @($data_reader.GetSchemaTable().ColumnName)
 
         if ($column_names) {
-
             # Read data
             while ($data_reader.Read()) {
                 $hash_table = [ordered]@{}
