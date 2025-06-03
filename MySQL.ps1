@@ -25,7 +25,7 @@ function Idm-SystemInfo {
         [string] $ConnectionParams
     )
 
-    Log info "-Connection=$Connection -TestConnection=$TestConnection -Configuration=$Configuration -ConnectionParams='$ConnectionParams'"
+    Log verbose "-Connection=$Connection -TestConnection=$TestConnection -Configuration=$Configuration -ConnectionParams='$ConnectionParams'"
     
     if ($Connection) {
         @(
@@ -108,7 +108,7 @@ function Idm-SystemInfo {
         @()
     }
 
-    Log info "Done"
+    Log verbose "Done"
 }
 
 
@@ -225,7 +225,7 @@ function Idm-Dispatcher {
         [string] $FunctionParams
     )
 
-    Log info "-Class='$Class' -Operation='$Operation' -GetMeta=$GetMeta -SystemParams='$SystemParams' -FunctionParams='$FunctionParams'"
+    Log verbose "-Class='$Class' -Operation='$Operation' -GetMeta=$GetMeta -SystemParams='$SystemParams' -FunctionParams='$FunctionParams'"
 
     if ($Class -eq '') {
 
@@ -546,7 +546,7 @@ function Idm-Dispatcher {
 
     }
 
-    Log info "Done"
+    Log verbose "Done"
 }
 
 
@@ -798,7 +798,7 @@ function Open-MySqlConnection {
 
     $connection_string = $cs_builder.ConnectionString.ToString()
     if ($Global:MySqlConnection -and $connection_string -ne $Global:MySqlConnectionString) {
-        Log info "MySqlConnection connection parameters changed"
+        Log verbose "MySqlConnection connection parameters changed"
         Close-MySqlConnection
     }
 
@@ -811,7 +811,7 @@ function Open-MySqlConnection {
         Log debug "Reusing MySqlConnection"
     }
     else {
-        Log info "Opening MySqlConnection '$connection_string'"
+        Log verbose "Opening MySqlConnection '$connection_string'"
 
         try {
             $connection = New-Object MySql.Data.MySqlClient.MySqlConnection($connection_string)
@@ -828,14 +828,14 @@ function Open-MySqlConnection {
             Write-Error $_
         }
 
-        Log info "Done"
+        Log verbose "Done"
     }
 }
 
 
 function Close-MySqlConnection {
     if ($Global:MySqlConnection) {
-        Log info "Closing MySqlConnection"
+        Log verbose "Closing MySqlConnection"
 
         try {
             $Global:MySqlConnection.Close()
@@ -845,6 +845,6 @@ function Close-MySqlConnection {
             # Purposely ignoring errors
         }
 
-        Log info "Done"
+        Log verbose "Done"
     }
 }
