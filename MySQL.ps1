@@ -140,36 +140,35 @@ function Fill-SqlInfoCache {
     SELECT *
     FROM (
         SELECT 
-        CONCAT(SC.TABLE_SCHEMA,'.',SC.TABLE_NAME) AS full_object_name,
-        'Table' AS object_type,
-        SC.COLUMN_NAME,
-        (CASE WHEN SC.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END) AS is_primary_key,
-        (CASE WHEN SC.EXTRA like '%auto_increment%'  THEN 1 ELSE 0 END) AS is_identity,
-        0 AS is_computed,
-        (CASE WHEN SC.IS_NULLABLE        = 'N'   THEN 0 ELSE 1 END) AS is_nullable
-        FROM       INFORMATION_SCHEMA.SCHEMATA s
-        INNER JOIN INFORMATION_SCHEMA.TABLES   st ON  st.TABLE_SCHEMA  = s.SCHEMA_NAME
-                                                  AND st.TABLE_CATALOG = s.CATALOG_NAME
-        INNER JOIN INFORMATION_SCHEMA.COLUMNS  sc ON  sc.TABLE_SCHEMA  = st.TABLE_SCHEMA
-                                                  AND sc.TABLE_NAME    = st.TABLE_NAME
-                                                  AND sc.TABLE_CATALOG = st.TABLE_CATALOG
-        WHERE sc.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
-        UNION
+            CONCAT(sc.TABLE_SCHEMA, '.', sc.TABLE_NAME) AS full_object_name,
+            'Table' AS object_type,
+            sc.COLUMN_NAME,
+            (CASE WHEN sc.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END) AS is_primary_key,
+            (CASE WHEN sc.EXTRA LIKE '%auto_increment%' THEN 1 ELSE 0 END) AS is_identity,
+            0 AS is_computed,
+            (CASE WHEN sc.IS_NULLABLE = 'NO' THEN 0 ELSE 1 END) AS is_nullable
+        FROM INFORMATION_SCHEMA.TABLES st
+        INNER JOIN INFORMATION_SCHEMA.COLUMNS sc
+            ON sc.TABLE_SCHEMA = st.TABLE_SCHEMA
+        AND sc.TABLE_NAME   = st.TABLE_NAME
+        WHERE st.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
+        AND st.TABLE_TYPE = 'BASE TABLE'
+
+        UNION ALL
+
         SELECT 
-        CONCAT(SC.TABLE_SCHEMA,'.',SC.TABLE_NAME) AS full_object_name,
-        'View' AS object_type,
-        SC.COLUMN_NAME,
-        (CASE WHEN SC.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END) AS is_primary_key,
-        (CASE WHEN SC.EXTRA like '%auto_increment%'  THEN 1 ELSE 0 END) AS is_identity,
-        0 AS is_computed,
-        (CASE WHEN SC.IS_NULLABLE        = 'N'   THEN 0 ELSE 1 END) AS is_nullable
-        FROM       INFORMATION_SCHEMA.SCHEMATA s
-        INNER JOIN INFORMATION_SCHEMA.VIEWS   st ON  st.TABLE_SCHEMA  = s.SCHEMA_NAME
-                                                  AND st.TABLE_CATALOG = s.CATALOG_NAME
-        INNER JOIN INFORMATION_SCHEMA.COLUMNS  sc ON  sc.TABLE_SCHEMA  = st.TABLE_SCHEMA
-                                                  AND sc.TABLE_NAME    = st.TABLE_NAME
-                                                  AND sc.TABLE_CATALOG = st.TABLE_CATALOG
-        WHERE sc.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
+            CONCAT(sc.TABLE_SCHEMA, '.', sc.TABLE_NAME) AS full_object_name,
+            'View' AS object_type,
+            sc.COLUMN_NAME,
+            0 AS is_primary_key,
+            0 AS is_identity,
+            0 AS is_computed,
+            (CASE WHEN sc.IS_NULLABLE = 'NO' THEN 0 ELSE 1 END) AS is_nullable
+        FROM INFORMATION_SCHEMA.VIEWS v
+        INNER JOIN INFORMATION_SCHEMA.COLUMNS sc
+            ON sc.TABLE_SCHEMA = v.TABLE_SCHEMA
+        AND sc.TABLE_NAME   = v.TABLE_NAME
+        WHERE v.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
     ) a
     ORDER BY full_object_name, COLUMN_NAME
     "
