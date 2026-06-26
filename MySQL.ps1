@@ -1,15 +1,113 @@
 #
-# MySQL.ps1 - IDM System PowerShell Script for MySQL.
+# MySQL.ps1 - PowerShell system for MySQL (MySqlConnector 2.4.0)
 #
-# Any IDM System PowerShell Script is dot-sourced in a separate PowerShell context, after
-# dot-sourcing the IDM Generic PowerShell Script '../Generic.ps1'.
-#
-
 
 $Log_MaskableKeys = @(
     'password'
 )
 
+# Load bundled MySqlConnector assembly and dependencies
+$script:LibPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'lib' | Join-Path -ChildPath 'MySql'
+$script:Dlls = @(
+    'System.Runtime.CompilerServices.Unsafe.dll'
+    'System.Threading.Tasks.Extensions.dll'
+    'System.Buffers.dll'
+    'System.Numerics.Vectors.dll'
+    'System.Memory.dll'
+    'Microsoft.Bcl.AsyncInterfaces.dll'
+    'System.Diagnostics.DiagnosticSource.dll'
+    'Microsoft.Extensions.DependencyInjection.Abstractions.dll'
+    'Microsoft.Extensions.Logging.Abstractions.dll'
+    'MySqlConnector.dll'
+)
+
+$script:MissingDlls = $script:Dlls | Where-Object { -not (Test-Path (Join-Path $script:LibPath $_)) }
+if ($script:MissingDlls) {
+    $Global:ModuleStatus = "<b><div class=`"alert alert-danger`" role=`"alert`">MySqlConnector library not installed. Run powershell command below as admin to download and install dependencies automatically.<br /><br /><code>. `"$($PSScriptRoot)\MySQL.ps1`"; Install-MySqlConnector</code><br /></div></b>"
+} else {
+    if (-not ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'MySqlConnector' })) {
+        $resolveHandler = [System.ResolveEventHandler] {
+            param($sender, $e)
+            $simpleName = ($e.Name -split ',')[0]
+            $dllPath = Join-Path $script:LibPath "$simpleName.dll"
+            if (Test-Path $dllPath) {
+                return [System.Reflection.Assembly]::LoadFrom($dllPath)
+            }
+            return $null
+        }
+        [System.AppDomain]::CurrentDomain.add_AssemblyResolve($resolveHandler)
+
+        foreach ($dll in $script:Dlls) {
+            [System.Reflection.Assembly]::LoadFrom((Join-Path $script:LibPath $dll)) | Out-Null
+        }
+    }
+    $Global:ModuleStatus = "<b><div class=`"alert alert-success`" role=`"alert`">Using MySqlConnector 2.4.0</div></b>"
+}
+
+function Install-MySqlConnector {
+    <#
+    .SYNOPSIS
+        Downloads and installs MySqlConnector 2.4.0 dependencies.
+    .DESCRIPTION
+        Downloads NuGet packages from nuget.org, extracts netstandard2.0 DLLs,
+        and places them in the lib\MySqlConnector folder.
+    .PARAMETER Force
+        Overwrite existing DLLs.
+    #>
+    param([switch]$Force)
+
+    $Packages = @(
+        @{ Name = 'System.Runtime.CompilerServices.Unsafe'; Version = '4.5.3' }
+        @{ Name = 'System.Threading.Tasks.Extensions';    Version = '4.5.4' }
+        @{ Name = 'System.Buffers';                       Version = '4.4.0' }
+        @{ Name = 'System.Numerics.Vectors';               Version = '4.5.0' }
+        @{ Name = 'System.Memory';                         Version = '4.5.5' }
+        @{ Name = 'Microsoft.Bcl.AsyncInterfaces';        Version = '8.0.0' }
+        @{ Name = 'System.Diagnostics.DiagnosticSource';   Version = '8.0.1' }
+        @{ Name = 'Microsoft.Extensions.DependencyInjection.Abstractions'; Version = '8.0.2' }
+        @{ Name = 'Microsoft.Extensions.Logging.Abstractions'; Version = '8.0.2' }
+        @{ Name = 'MySqlConnector';                        Version = '2.4.0' }
+    )
+
+    $target = $script:LibPath
+    $null = New-Item -ItemType Directory -Path $target -Force
+    $count = 0
+    $total = $Packages.Count
+
+    foreach ($pkg in $Packages) {
+        $count++
+        $dllName = "$($pkg.Name).dll"
+        $outPath = Join-Path $target $dllName
+
+        if ((Test-Path $outPath) -and -not $Force) {
+            Write-Host "[$count/$total] $($pkg.Name) $($pkg.Version) - exists, skip (use -Force to overwrite)"
+            continue
+        }
+
+        Write-Host "[$count/$total] $($pkg.Name) $($pkg.Version) ... " -NoNewline
+        $nupkgUrl = "https://www.nuget.org/api/v2/package/$($pkg.Name)/$($pkg.Version)"
+        $tmpZip = Join-Path $env:TEMP "$($pkg.Name).$($pkg.Version).zip"
+
+        try { Invoke-WebRequest -Uri $nupkgUrl -OutFile $tmpZip -UseBasicParsing -ErrorAction Stop }
+        catch { Write-Host "FAILED (download)"; continue }
+
+        $extractDir = Join-Path $env:TEMP "$($pkg.Name).$($pkg.Version).ext"
+        $null = New-Item -ItemType Directory -Path $extractDir -Force
+
+        try { Expand-Archive -Path $tmpZip -DestinationPath $extractDir -Force -ErrorAction Stop }
+        catch { Write-Host "FAILED (extract): $($_.Exception.Message)"; Remove-Item $tmpZip,$extractDir -Recurse -Force -ErrorAction SilentlyContinue; continue }
+
+        $dllSource = Get-ChildItem -Path $extractDir -Recurse -Filter $dllName | Where-Object { $_.DirectoryName -match '\\netstandard2\.0$' } | Select-Object -First 1
+        if (-not $dllSource) {
+            $dllSource = Get-ChildItem -Path $extractDir -Recurse -Filter $dllName | Where-Object { $_.DirectoryName -match '\\lib\\' } | Select-Object -First 1
+        }
+
+        if (-not $dllSource) { Write-Host "FAILED (DLL not found)" }
+        else { Copy-Item -Path $dllSource.FullName -Destination $outPath -Force; Write-Host "OK" }
+
+        Remove-Item $tmpZip,$extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 #
 # System functions
@@ -30,6 +128,12 @@ function Idm-SystemInfo {
     if ($Connection) {
         @(
             @{
+                name = 'ModuleStatus'
+                type = 'text'
+                label = 'Driver Status'
+                text = $Global:ModuleStatus
+            }    
+           @{
                 name = 'server'
                 type = 'textbox'
                 label = 'Server'
@@ -61,27 +165,16 @@ function Idm-SystemInfo {
                 name = 'username'
                 type = 'textbox'
                 label = 'Username'
-                label_indent = $true
                 description = 'User account name to access server'
                 value = ''
-                hidden = 'use_svc_account_creds'
             }
             @{
                 name = 'password'
                 type = 'textbox'
                 password = $true
                 label = 'Password'
-                label_indent = $true
                 description = 'User account password to access server'
                 value = ''
-                hidden = 'use_svc_account_creds'
-            }
-            @{
-                name = 'mysql_net_installpath'
-                type = 'textbox'
-                label = 'MySQL .NET installation path'
-                description = 'Path of MySQL .NET installation'
-                value = 'C:\Program Files (x86)\MySQL\Connector NET 8.0\Assemblies\netstandard2.1'
             }
             @{
                 name = 'nr_of_sessions'
@@ -136,42 +229,42 @@ function Fill-SqlInfoCache {
     }
 
     # Refresh cache
-    $sql_command = New-MySqlCommand "
-    SELECT *
-    FROM (
-        SELECT 
-            CONCAT(sc.TABLE_SCHEMA, '.', sc.TABLE_NAME) AS full_object_name,
-            'Table' AS object_type,
-            sc.COLUMN_NAME,
-            (CASE WHEN sc.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END) AS is_primary_key,
-            (CASE WHEN sc.EXTRA LIKE '%auto_increment%' THEN 1 ELSE 0 END) AS is_identity,
-            0 AS is_computed,
-            (CASE WHEN sc.IS_NULLABLE = 'NO' THEN 0 ELSE 1 END) AS is_nullable
-        FROM INFORMATION_SCHEMA.TABLES st
-        INNER JOIN INFORMATION_SCHEMA.COLUMNS sc
-            ON sc.TABLE_SCHEMA = st.TABLE_SCHEMA
-        AND sc.TABLE_NAME   = st.TABLE_NAME
-        WHERE st.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
-        AND st.TABLE_TYPE = 'BASE TABLE'
+    $sql_command = New-MySqlCommand @'
+        SELECT *
+        FROM (
+            SELECT 
+                CONCAT(sc.TABLE_SCHEMA, '.', sc.TABLE_NAME) AS full_object_name,
+                'Table' AS object_type,
+                sc.COLUMN_NAME,
+                (CASE WHEN sc.COLUMN_KEY = 'PRI' THEN 1 ELSE 0 END) AS is_primary_key,
+                (CASE WHEN sc.EXTRA LIKE '%auto_increment%' THEN 1 ELSE 0 END) AS is_identity,
+                0 AS is_computed,
+                (CASE WHEN sc.IS_NULLABLE = 'NO' THEN 0 ELSE 1 END) AS is_nullable
+            FROM INFORMATION_SCHEMA.TABLES st
+            INNER JOIN INFORMATION_SCHEMA.COLUMNS sc
+                ON sc.TABLE_SCHEMA = st.TABLE_SCHEMA
+            AND sc.TABLE_NAME   = st.TABLE_NAME
+            WHERE st.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
+            AND st.TABLE_TYPE = 'BASE TABLE'
 
-        UNION ALL
+            UNION ALL
 
-        SELECT 
-            CONCAT(sc.TABLE_SCHEMA, '.', sc.TABLE_NAME) AS full_object_name,
-            'View' AS object_type,
-            sc.COLUMN_NAME,
-            0 AS is_primary_key,
-            0 AS is_identity,
-            0 AS is_computed,
-            (CASE WHEN sc.IS_NULLABLE = 'NO' THEN 0 ELSE 1 END) AS is_nullable
-        FROM INFORMATION_SCHEMA.VIEWS v
-        INNER JOIN INFORMATION_SCHEMA.COLUMNS sc
-            ON sc.TABLE_SCHEMA = v.TABLE_SCHEMA
-        AND sc.TABLE_NAME   = v.TABLE_NAME
-        WHERE v.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
-    ) a
-    ORDER BY full_object_name, COLUMN_NAME
-    "
+            SELECT 
+                CONCAT(sc.TABLE_SCHEMA, '.', sc.TABLE_NAME) AS full_object_name,
+                'View' AS object_type,
+                sc.COLUMN_NAME,
+                0 AS is_primary_key,
+                0 AS is_identity,
+                0 AS is_computed,
+                (CASE WHEN sc.IS_NULLABLE = 'NO' THEN 0 ELSE 1 END) AS is_nullable
+            FROM INFORMATION_SCHEMA.VIEWS v
+            INNER JOIN INFORMATION_SCHEMA.COLUMNS sc
+                ON sc.TABLE_SCHEMA = v.TABLE_SCHEMA
+            AND sc.TABLE_NAME   = v.TABLE_NAME
+            WHERE v.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
+        ) a
+        ORDER BY full_object_name, COLUMN_NAME
+'@
 
     $result = Invoke-MySqlCommand $sql_command
 
@@ -446,8 +539,8 @@ function Idm-Dispatcher {
             switch ($Operation) {
                 'Create' {
                     $filter = if ($identity_col) {
-                                  "[$identity_col] = SCOPE_IDENTITY()"
-                              }
+                                    '`' + $identity_col + '`' + ' = LAST_INSERT_ID()'
+                                }
                               elseif ($primary_keys) {
                                   @($primary_keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
                               }
@@ -535,6 +628,7 @@ function Idm-Dispatcher {
                     $rv = Invoke-MySqlCommand $sql_command $deparam_command
                     LogIO info ($deparam_command -split ' ')[0] -Out $rv
 
+                    log info ($rv | ConvertTo-Json)
                     $rv
                 }
             }
@@ -558,13 +652,15 @@ function New-MySqlCommand {
         [string] $CommandText
     )
 
-    New-Object MySql.Data.MySqlClient.MySqlCommand($CommandText, $Global:MySqlConnection)
+    $cmd = $Global:MySqlConnection.CreateCommand()
+    $cmd.CommandText = $CommandText
+    $cmd
 }
 
 
 function Dispose-MySqlCommand {
     param (
-        [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
+        $SqlCommand
     )
 
     $SqlCommand.Dispose()
@@ -573,12 +669,15 @@ function Dispose-MySqlCommand {
 
 function AddParam-MySqlCommand {
     param (
-        [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand,
+        $SqlCommand,
         $Param
     )
 
     $param_name = "@param$($SqlCommand.Parameters.Count)_"
-    $SqlCommand.Parameters.AddWithValue($param_name, $Param) | Out-Null
+    $p = $SqlCommand.CreateParameter()
+    $p.ParameterName = $param_name
+    $p.Value = if ($null -eq $Param) { [System.DBNull]::Value } else { $Param }
+    $SqlCommand.Parameters.Add($p) | Out-Null
 
     return $param_name
 }
@@ -586,77 +685,100 @@ function AddParam-MySqlCommand {
 
 function DeParam-MySqlCommand {
     param (
-        [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
+        $SqlCommand
     )
 
     $deparam_command = $SqlCommand.CommandText
 
     foreach ($p in $SqlCommand.Parameters) {
-        $value_txt = 
+        $value_txt =
             if ($p.Value -eq [System.DBNull]::Value) {
                 'NULL'
             }
+            elseif ($p.Value -is [DateTime]) {
+                "'$($p.Value.ToString('yyyy-MM-dd HH:mm:ss'))'"
+            }
+            elseif ($p.Value -is [TimeSpan]) {
+                $ts = $p.Value
+                $totalHours = [Math]::Floor($ts.TotalHours)
+                "'$('{0}:{1:D2}:{2:D2}' -f $totalHours, $ts.Minutes, $ts.Seconds)'"
+            }
+            elseif ($p.Value -is [string] -and $p.Value -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}') {
+                $parsed = [DateTime]::Parse($p.Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                "'$($parsed.ToString('yyyy-MM-dd HH:mm:ss'))'"
+            }
+            elseif ($p.Value -is [string] -and $p.Value -match '^\d{13}$') {
+                $parsed = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$p.Value).UtcDateTime
+                "'$($parsed.ToString('yyyy-MM-dd HH:mm:ss'))'"
+            }
             else {
-                switch ($p.MySqlDbType) {
-                    { $_ -in @(
-                        [MySql.Data.MySqlClient.MySqlDbType]::VarString
-                        [MySql.Data.MySqlClient.MySqlDbType]::JSON
-                        [MySql.Data.MySqlClient.MySqlDbType]::Date
-                        [MySql.Data.MySqlClient.MySqlDbType]::Enum
-                        [MySql.Data.MySqlClient.MySqlDbType]::Set
-                        [MySql.Data.MySqlClient.MySqlDbType]::Timestamp
-                        [MySql.Data.MySqlClient.MySqlDbType]::String
-                        [MySql.Data.MySqlClient.MySqlDbType]::Text
-                        [MySql.Data.MySqlClient.MySqlDbType]::TinyText
-                        [MySql.Data.MySqlClient.MySqlDbType]::MediumText
-                        [MySql.Data.MySqlClient.MySqlDbType]::LongText
-                        [MySql.Data.MySqlClient.MySqlDbType]::VarBinary
-                        [MySql.Data.MySqlClient.MySqlDbType]::Time
-                        [MySql.Data.MySqlClient.MySqlDbType]::VarChar
-                    )} {
-                        "'" + $p.Value.ToString().Replace("'", "''") + "'"
-                        break
-                    }
-        
-                    default {
-                        $p.Value.ToString().Replace("'", "''")
-                        break
-                    }
+                $val = $p.Value.ToString()
+                if ($p.Value -is [string]) {
+                    "'$($val.Replace("'", "''"))'"
+                } else {
+                    $val.Replace("'", "''")
                 }
             }
 
         $deparam_command = $deparam_command.Replace($p.ParameterName, $value_txt)
     }
 
-    # Make one single line
     @($deparam_command -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }) -join ' '
 }
 
 
 function Invoke-MySqlCommand {
     param (
-        [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand,
+        $SqlCommand,
         [string] $DeParamCommand
     )
 
     # Streaming
     function Invoke-MySqlCommand-ExecuteReader {
         param (
-            [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
+            $SqlCommand
         )
         $data_reader = $SqlCommand.ExecuteReader()
         $column_names = @($data_reader.GetSchemaTable().ColumnName)
 
         if ($column_names) {
-            # Read data
             while ($data_reader.Read()) {
                 $hash_table = [ordered]@{}
 
                 foreach ($column_name in $column_names) {
-                    $hash_table[$column_name] = if ($data_reader[$column_name] -is [System.DBNull]) { $null } else { $data_reader[$column_name] }
+                    
+                    $value_txt = if ($data_reader[$column_name] -eq [System.DBNull]::Value) {
+                                        $null
+                                    }
+                                    elseif ($data_reader[$column_name] -is [DateTime]) {
+                                        "$($data_reader[$column_name].ToString('yyyy-MM-dd HH:mm:ss'))"
+                                    }
+                                    elseif ($data_reader[$column_name] -is [TimeSpan]) {
+                                        $ts = $data_reader[$column_name]
+                                        $totalHours = [Math]::Floor($ts.TotalHours)
+                                        "$('{0}:{1:D2}:{2:D2}' -f $totalHours, $ts.Minutes, $ts.Seconds)"
+                                    }
+                                    elseif ($data_reader[$column_name] -is [string] -and $data_reader[$column_name] -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}') {
+                                        $parsed = [DateTime]::Parse($data_reader[$column_name], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                                        "$($parsed.ToString('yyyy-MM-dd HH:mm:ss'))"
+                                    }
+                                    elseif ($data_reader[$column_name] -is [string] -and $data_reader[$column_name] -match '^\d{13}$') {
+                                        $parsed = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$data_reader[$column_name]).UtcDateTime
+                                        "$($parsed.ToString('yyyy-MM-dd HH:mm:ss'))"
+                                    }
+                                    else {
+                                        $val = $data_reader[$column_name].ToString()
+                                        if ($data_reader[$column_name] -is [string]) {
+                                            "$($data_reader[$column_name])"
+                                        } else {
+                                            $data_reader[$column_name]
+                                        }
+                                    }
+                    
+                    #$hash_table[$column_name] = if ($data_reader[$column_name] -is [System.DBNull]) { $null } else { $data_reader[$column_name] }
+                    $hash_table[$column_name] = $value_txt
                 }
 
-                # Output data
                 New-Object -TypeName PSObject -Property $hash_table
             }
 
@@ -665,103 +787,13 @@ function Invoke-MySqlCommand {
         $data_reader.Close()
     }
 
-    # Streaming
-    function Invoke-MySqlCommand-ExecuteReader00 {
-        param (
-            [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
-        )
-
-        $data_reader = $SqlCommand.ExecuteReader()
-        $column_names = @($data_reader.GetSchemaTable().ColumnName)
-
-        if ($column_names) {
-
-            # Initialize result
-            $hash_table = [ordered]@{}
-
-            for ($i = 0; $i -lt $column_names.Count; $i++) {
-                $hash_table[$column_names[$i]] = ''
-            }
-
-            $result = New-Object -TypeName PSObject -Property $hash_table
-
-            # Read data
-            while ($data_reader.Read()) {
-                foreach ($column_name in $column_names) {
-                    $result.$column_name = $data_reader[$column_name]
-                }
-
-                # Output data
-                $result
-            }
-
-        }
-
-        $data_reader.Close()
-    }
-
-    # Streaming
-    function Invoke-MySqlCommand-ExecuteReader01 {
-        param (
-            [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
-        )
-
-        $data_reader = $SqlCommand.ExecuteReader()
-        $field_count = $data_reader.FieldCount
-
-        while ($data_reader.Read()) {
-            $hash_table = [ordered]@{}
-        
-            for ($i = 0; $i -lt $field_count; $i++) {
-                $hash_table[$data_reader.GetName($i)] = $data_reader.GetValue($i)
-            }
-
-            # Output data
-            New-Object -TypeName PSObject -Property $hash_table
-        }
-
-        $data_reader.Close()
-    }
-
-    # Non-streaming (data stored in $data_table)
-    function Invoke-MySqlCommand-DataAdapter-DataTable {
-        param (
-            [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
-        )
-
-        $data_adapter = New-Object System.Data.SqlClient.SqlDataAdapter($SqlCommand)
-        $data_table   = New-Object System.Data.DataTable
-        $data_adapter.Fill($data_table) | Out-Null
-
-        # Output data
-        $data_table.Rows
-
-        $data_table.Dispose()
-        $data_adapter.Dispose()
-    }
-
-    # Non-streaming (data stored in $data_set)
-    function Invoke-MySqlCommand-DataAdapter-DataSet {
-        param (
-            [MySql.Data.MySqlClient.MySqlCommand] $SqlCommand
-        )
-
-        $data_adapter = New-Object System.Data.SqlClient.SqlDataAdapter($SqlCommand)
-        $data_set     = New-Object System.Data.DataSet
-        $data_adapter.Fill($data_set) | Out-Null
-
-        # Output data
-        $data_set.Tables[0]
-
-        $data_set.Dispose()
-        $data_adapter.Dispose()
-    }
-
     if (! $DeParamCommand) {
         $DeParamCommand = DeParam-MySqlCommand $SqlCommand
+        
     }
-
+    
     Log debug $DeParamCommand
+    $SqlCommand.CommandText = $DeparamCommand
 
     try {
         Invoke-MySqlCommand-ExecuteReader $SqlCommand
@@ -780,22 +812,24 @@ function Open-MySqlConnection {
         [string] $ConnectionParams
     )
     $connection_params = ConvertFrom-Json2 $ConnectionParams
-    [void][System.Reflection.Assembly]::LoadFrom("$($connection_params.mysql_net_installpath)\MySql.Data.dll")
-    $cs_builder = New-Object MySql.Data.MySqlClient.MySqlConnectionStringBuilder
 
-    # Use connection related parameters only
-    $cs_builder.Server     = $connection_params.server
-    $cs_builder.Port     = $connection_params.port
-    $cs_builder.Database = $connection_params.database
-
-    $cs_builder.UserID  = $connection_params.username
-    $cs_builder.Password = $connection_params.password   
+    # Build connection string using MySqlConnectionStringBuilder (SimplySQL pattern)
+    $sb = New-Object MySqlConnector.MySqlConnectionStringBuilder
+    $sb.Server = $connection_params.server
+    $sb.Port = [int]$connection_params.port
+    $sb.Database = $connection_params.database
+    $sb.UserID = $connection_params.username
+    $sb.Password = $connection_params.password
+    $sb.AllowLoadLocalInfile = $true
+    $sb.UseAffectedRows = $true
+    $sb.AllowUserVariables = $true
+    $sb.TlsVersion = 'Tls12'
 
     if ($connection_params.ssl_mode) {
-        $cs_builderSslMode = 'Preferred'
+        $sb.SslMode = [MySqlConnector.MySqlSslMode]::Preferred
     }
+    $connection_string = $sb.ToString()
 
-    $connection_string = $cs_builder.ConnectionString.ToString()
     if ($Global:MySqlConnection -and $connection_string -ne $Global:MySqlConnectionString) {
         Log verbose "MySqlConnection connection parameters changed"
         Close-MySqlConnection
@@ -813,7 +847,7 @@ function Open-MySqlConnection {
         Log verbose "Opening MySqlConnection '$connection_string'"
 
         try {
-            $connection = New-Object MySql.Data.MySqlClient.MySqlConnection($connection_string)
+            $connection = New-Object MySqlConnector.MySqlConnection($connection_string)
             $connection.Open()
 
             $Global:MySqlConnection       = $connection
