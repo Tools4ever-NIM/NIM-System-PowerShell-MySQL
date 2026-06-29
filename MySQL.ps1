@@ -50,7 +50,7 @@ function Install-MySqlConnector {
         Downloads and installs MySqlConnector 2.4.0 dependencies.
     .DESCRIPTION
         Downloads NuGet packages from nuget.org, extracts netstandard2.0 DLLs,
-        and places them in the lib\MySqlConnector folder.
+        and places them in the lib\MySql folder.
     .PARAMETER Force
         Overwrite existing DLLs.
     #>
@@ -58,15 +58,15 @@ function Install-MySqlConnector {
 
     $Packages = @(
         @{ Name = 'System.Runtime.CompilerServices.Unsafe'; Version = '4.5.3' }
-        @{ Name = 'System.Threading.Tasks.Extensions';    Version = '4.5.4' }
-        @{ Name = 'System.Buffers';                       Version = '4.4.0' }
-        @{ Name = 'System.Numerics.Vectors';               Version = '4.5.0' }
-        @{ Name = 'System.Memory';                         Version = '4.5.5' }
-        @{ Name = 'Microsoft.Bcl.AsyncInterfaces';        Version = '8.0.0' }
-        @{ Name = 'System.Diagnostics.DiagnosticSource';   Version = '8.0.1' }
+        @{ Name = 'System.Threading.Tasks.Extensions'; Version = '4.5.4' }
+        @{ Name = 'System.Buffers'; Version = '4.4.0' }
+        @{ Name = 'System.Numerics.Vectors'; Version = '4.5.0' }
+        @{ Name = 'System.Memory'; Version = '4.5.5' }
+        @{ Name = 'Microsoft.Bcl.AsyncInterfaces'; Version = '8.0.0' }
+        @{ Name = 'System.Diagnostics.DiagnosticSource'; Version = '8.0.1' }
         @{ Name = 'Microsoft.Extensions.DependencyInjection.Abstractions'; Version = '8.0.2' }
         @{ Name = 'Microsoft.Extensions.Logging.Abstractions'; Version = '8.0.2' }
-        @{ Name = 'MySqlConnector';                        Version = '2.4.0' }
+        @{ Name = 'MySqlConnector'; Version = '2.4.0' }
     )
 
     $target = $script:LibPath
@@ -99,7 +99,7 @@ function Install-MySqlConnector {
 
         $dllSource = Get-ChildItem -Path $extractDir -Recurse -Filter $dllName | Where-Object { $_.DirectoryName -match '\\netstandard2\.0$' } | Select-Object -First 1
         if (-not $dllSource) {
-            $dllSource = Get-ChildItem -Path $extractDir -Recurse -Filter $dllName | Where-Object { $_.DirectoryName -match '\\lib\\' } | Select-Object -First 1
+            $dllSource = Get-ChildItem -Path $extractDir -Recurse -Filter $dllName | Where-Object { $_.DirectoryName -match '\\lib\\' } | Sort-Object FullName | Select-Object -First 1
         }
 
         if (-not $dllSource) { Write-Host "FAILED (DLL not found)" }
@@ -132,8 +132,8 @@ function Idm-SystemInfo {
                 type = 'text'
                 label = 'Driver Status'
                 text = $Global:ModuleStatus
-            }    
-           @{
+            }
+            @{
                 name = 'server'
                 type = 'textbox'
                 label = 'Server'
@@ -194,7 +194,15 @@ function Idm-SystemInfo {
     }
 
     if ($TestConnection) {
-        Open-MySqlConnection $ConnectionParams
+        $connection = $null
+        try {
+            $connection = Open-MySqlConnection $ConnectionParams
+        }
+        finally {
+            if ($connection) {
+                Close-MySqlConnection
+            }
+        }
     }
 
     if ($Configuration) {
@@ -221,15 +229,17 @@ $SqlInfoCache = @{}
 
 function Fill-SqlInfoCache {
     param (
-        [switch] $Force
+        [switch] $Force,
+        $Connection
     )
 
-    if (!$Force -and $Global:SqlInfoCache.Ts -and ((Get-Date) - $Global:SqlInfoCache.Ts).TotalMilliseconds -le [Int32]600000) {
+    if (-not $Connection) { $Connection = $Global:MySqlConnection }
+
+    if (!$Force -and $Global:SqlInfoCache.Ts -and ((Get-Date) - $Global:SqlInfoCache.Ts).TotalMilliseconds -le 600000) {
         return
     }
 
-    # Refresh cache
-    $sql_command = New-MySqlCommand @'
+    $sql_command = New-MySqlCommand -Connection $Connection @"
         SELECT *
         FROM (
             SELECT 
@@ -264,16 +274,18 @@ function Fill-SqlInfoCache {
             WHERE v.TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
         ) a
         ORDER BY full_object_name, COLUMN_NAME
-'@
+"@
 
-    $result = Invoke-MySqlCommand $sql_command
-
-    Dispose-MySqlCommand $sql_command
+    try {
+        $result = Invoke-MySqlCommand $sql_command
+    }
+    finally {
+        Dispose-MySqlCommand $sql_command
+    }
 
     $objects = New-Object System.Collections.ArrayList
     $object = @{}
 
-    # Process in one pass
     foreach ($row in $result) {
         if ($row.full_object_name -ne $object.full_name) {
             if ($null -ne $object.full_name) {
@@ -304,7 +316,6 @@ function Fill-SqlInfoCache {
     $Global:SqlInfoCache.Ts = Get-Date
 }
 
-
 function Idm-Dispatcher {
     param (
         # Optional Class/Operation
@@ -322,62 +333,59 @@ function Idm-Dispatcher {
     if ($Class -eq '') {
 
         if ($GetMeta) {
-            #
-            # Get all tables and views in database
-            #
+            $connection = $null
+            try {
+                $connection = Open-MySqlConnection $SystemParams
 
-            Open-MySqlConnection $SystemParams
+                Fill-SqlInfoCache -Force -Connection $connection
 
-            Fill-SqlInfoCache -Force
+                @(
+                    foreach ($object in $Global:SqlInfoCache.Objects) {
+                        $primary_keys = $object.columns | Where-Object { $_.is_primary_key } | ForEach-Object { $_.name }
 
-            #
-            # Output list of supported operations per table/view (named Class)
-            #
-
-            @(
-                foreach ($object in $Global:SqlInfoCache.Objects) {
-                    $primary_keys = $object.columns | Where-Object { $_.is_primary_key } | ForEach-Object { $_.name }
-
-                    if ($object.type -ne 'Table') {
-                        # Non-tables only support 'Read'
-                        [ordered]@{
-                            Class = $object.full_name
-                            Operation = 'Read'
-                            'Source type' = $object.type
-                            'Primary key' = $primary_keys -join ', '
-                            'Supported operations' = 'R'
-                        }
-                    }
-                    else {
-                        [ordered]@{
-                            Class = $object.full_name
-                            Operation = 'Create'
-                        }
-
-                        [ordered]@{
-                            Class = $object.full_name
-                            Operation = 'Read'
-                            'Source type' = $object.type
-                            'Primary key' = $primary_keys -join ', '
-                            'Supported operations' = "CR$(if ($primary_keys) { 'UD' } else { '' })"
-                        }
-
-                        if ($primary_keys) {
-                            # Only supported if primary keys are present
+                        if ($object.type -ne 'Table') {
                             [ordered]@{
                                 Class = $object.full_name
-                                Operation = 'Update'
+                                Operation = 'Read'
+                                'Source type' = $object.type
+                                'Primary key' = $primary_keys -join ', '
+                                'Supported operations' = 'R'
+                            }
+                        }
+                        else {
+                            [ordered]@{
+                                Class = $object.full_name
+                                Operation = 'Create'
                             }
 
                             [ordered]@{
                                 Class = $object.full_name
-                                Operation = 'Delete'
+                                Operation = 'Read'
+                                'Source type' = $object.type
+                                'Primary key' = $primary_keys -join ', '
+                                'Supported operations' = "CR$(if ($primary_keys) { 'UD' } else { '' })"
+                            }
+
+                            if ($primary_keys) {
+                                [ordered]@{
+                                    Class = $object.full_name
+                                    Operation = 'Update'
+                                }
+
+                                [ordered]@{
+                                    Class = $object.full_name
+                                    Operation = 'Delete'
+                                }
                             }
                         }
                     }
+                )
+            }
+            finally {
+                if ($connection) {
+                    Close-MySqlConnection
                 }
-            )
-
+            }
         }
         else {
             # Purposely no-operation.
@@ -387,254 +395,304 @@ function Idm-Dispatcher {
     else {
 
         if ($GetMeta) {
-            #
-            # Get meta data
-            #
+            $connection = $null
+            try {
+                $connection = Open-MySqlConnection $SystemParams
 
-            Open-MySqlConnection $SystemParams
+                Fill-SqlInfoCache -Connection $connection
 
-            Fill-SqlInfoCache
+                $sql_object = Get-MySqlObjectInfo -Class $Class
+                $columns = $sql_object.columns
 
-            $columns = ($Global:SqlInfoCache.Objects | Where-Object { $_.full_name -eq $Class }).columns
-
-            switch ($Operation) {
-                'Create' {
-                    @{
-                        semantics = 'create'
-                        parameters = @(
-                            $columns | ForEach-Object {
-                                @{
-                                    name = $_.name;
-                                    allowance = if ($_.is_identity -or $_.is_computed) { 'prohibited' } elseif (! $_.is_nullable) { 'mandatory' } else { 'optional' }
-                                }
-                            }
-                        )
-                    }
-                    break
-                }
-
-                'Read' {
-                    @(
+                switch ($Operation) {
+                    'Create' {
                         @{
-                            name = 'where_clause'
-                            type = 'textbox'
-                            label = 'Filter (SQL where-clause)'
-                            description = 'Applied SQL where-clause'
-                            value = ''
-                        }
-                        @{
-                            name = 'selected_columns'
-                            type = 'grid'
-                            label = 'Include columns'
-                            description = 'Selected columns'
-                            table = @{
-                                rows = @($columns | ForEach-Object {
+                            semantics = 'create'
+                            parameters = @(
+                                $columns | ForEach-Object {
                                     @{
                                         name = $_.name
-                                        config = @(
-                                            if ($_.is_primary_key) { 'Primary key' }
-                                            if ($_.is_identity)    { 'Generated' }
-                                            if ($_.is_computed)    { 'Computed' }
-                                            if ($_.is_nullable)    { 'Nullable' }
-                                        ) -join ' | '
+                                        allowance = if ($_.is_identity -or $_.is_computed) { 'prohibited' } elseif (-not $_.is_nullable) { 'mandatory' } else { 'optional' }
                                     }
-                                })
-                                settings_grid = @{
-                                    selection = 'multiple'
-                                    key_column = 'name'
-                                    checkbox = $true
-                                    filter = $true
-                                    columns = @(
-                                        @{
-                                            name = 'name'
-                                            display_name = 'Name'
-                                        }
-                                        @{
-                                            name = 'config'
-                                            display_name = 'Configuration'
-                                        }
-                                    )
                                 }
-                            }
-                            value = @($columns | ForEach-Object { $_.name })
+                            )
                         }
-                    )
-                    break
-                }
-
-                'Update' {
-                    @{
-                        semantics = 'update'
-                        parameters = @(
-                            $columns | ForEach-Object {
-                                @{
-                                    name = $_.name;
-                                    allowance = if ($_.is_primary_key) { 'mandatory' } else { 'optional' }
-                                }
-                            }
-                            @{
-                                name = '*'
-                                allowance = 'prohibited'
-                            }
-                        )
+                        break
                     }
-                    break
-                }
 
-                'Delete' {
-                    @{
-                        semantics = 'delete'
-                        parameters = @(
-                            $columns | ForEach-Object {
-                                if ($_.is_primary_key) {
+                    'Read' {
+                        @(
+                            @(
+                                $columns | ForEach-Object {
                                     @{
                                         name = $_.name
-                                        allowance = 'mandatory'
+                                        type = 'textbox'
+                                        label = "Filter: $($_.name)"
+                                        description = 'Optional exact-match filter'
+                                        value = ''
                                     }
                                 }
-                            }
+                            )
                             @{
-                                name = '*'
-                                allowance = 'prohibited'
+                                name = 'selected_columns'
+                                type = 'grid'
+                                label = 'Include columns'
+                                description = 'Selected columns'
+                                table = @{
+                                    rows = @($columns | ForEach-Object {
+                                        @{
+                                            name = $_.name
+                                            config = @(
+                                                if ($_.is_primary_key) { 'Primary key' }
+                                                if ($_.is_identity)    { 'Generated' }
+                                                if ($_.is_computed)    { 'Computed' }
+                                                if ($_.is_nullable)    { 'Nullable' }
+                                            ) -join ' | '
+                                        }
+                                    })
+                                    settings_grid = @{
+                                        selection = 'multiple'
+                                        key_column = 'name'
+                                        checkbox = $true
+                                        filter = $true
+                                        columns = @(
+                                            @{
+                                                name = 'name'
+                                                display_name = 'Name'
+                                            }
+                                            @{
+                                                name = 'config'
+                                                display_name = 'Configuration'
+                                            }
+                                        )
+                                    }
+                                }
+                                value = @($columns | ForEach-Object { $_.name })
                             }
                         )
+                        break
                     }
-                    break
+
+                    'Update' {
+                        @{
+                            semantics = 'update'
+                            parameters = @(
+                                $columns | ForEach-Object {
+                                    @{
+                                        name = $_.name
+                                        allowance = if ($_.is_primary_key) { 'mandatory' } else { 'optional' }
+                                    }
+                                }
+                                @{
+                                    name = '*'
+                                    allowance = 'prohibited'
+                                }
+                            )
+                        }
+                        break
+                    }
+
+                    'Delete' {
+                        @{
+                            semantics = 'delete'
+                            parameters = @(
+                                $columns | ForEach-Object {
+                                    if ($_.is_primary_key) {
+                                        @{
+                                            name = $_.name
+                                            allowance = 'mandatory'
+                                        }
+                                    }
+                                }
+                                @{
+                                    name = '*'
+                                    allowance = 'prohibited'
+                                }
+                            )
+                        }
+                        break
+                    }
                 }
             }
-
+            finally {
+                if ($connection) {
+                    Close-MySqlConnection
+                }
+            }
         }
         else {
-            #
-            # Execute function
-            #
+            $connection = $null
+            try {
+                $connection = Open-MySqlConnection $SystemParams
 
-            Open-MySqlConnection $SystemParams
+                Fill-SqlInfoCache -Connection $connection
 
-            if (! $Global:ColumnsInfoCache[$Class]) {
-                Fill-SqlInfoCache
+                if (-not $Global:ColumnsInfoCache[$Class]) {
+                    $sql_object = Get-MySqlObjectInfo -Class $Class
+                    $columns = $sql_object.columns
 
-                $columns = ($Global:SqlInfoCache.Objects | Where-Object { $_.full_name -eq $Class }).columns
+                    $Global:ColumnsInfoCache[$Class] = @{
+                        primary_keys = @($columns | Where-Object { $_.is_primary_key } | ForEach-Object { $_.name })
+                        identity_col = @($columns | Where-Object { $_.is_identity } | ForEach-Object { $_.name })[0]
+                        columns = @($columns | ForEach-Object { $_.name })
+                    }
+                }
 
-                $Global:ColumnsInfoCache[$Class] = @{
-                    primary_keys = @($columns | Where-Object { $_.is_primary_key } | ForEach-Object { $_.name })
-                    identity_col = @($columns | Where-Object { $_.is_identity    } | ForEach-Object { $_.name })[0]
+                $primary_keys = $Global:ColumnsInfoCache[$Class].primary_keys
+                $identity_col = $Global:ColumnsInfoCache[$Class].identity_col
+                $class_columns = $Global:ColumnsInfoCache[$Class].columns
+                $quoted_class = ConvertTo-MySqlIdentifier -Name $Class
+
+                $function_params = ConvertFrom-Json2 $FunctionParams
+                $selected_columns = @($function_params['selected_columns'])
+                $payload_columns = @($function_params.Keys | Where-Object { $_ -in $class_columns })
+                $projection = ConvertTo-MySqlProjection -SelectedColumns $selected_columns -AvailableColumns $class_columns
+
+                $keys_with_null_value = @()
+                foreach ($key in $function_params.Keys) {
+                    if ($null -eq $function_params[$key]) {
+                        $keys_with_null_value += $key
+                    }
+                }
+                foreach ($key in $keys_with_null_value) {
+                    $function_params[$key] = [System.DBNull]::Value
+                }
+
+                switch ($Operation) {
+                    'Create' {
+                        if ($payload_columns.Count -eq 0) {
+                            throw 'Create requires at least one column value.'
+                        }
+
+                        $insert_command = New-MySqlCommand -Connection $connection
+                        try {
+                            $insert_command.CommandText = @"
+                                INSERT INTO $quoted_class (
+                                    $(@($payload_columns | ForEach-Object { ConvertTo-MySqlIdentifier -Name $_ }) -join ', ')
+                                )
+                                VALUES (
+                                    $(@($payload_columns | ForEach-Object { AddParam-MySqlCommand $insert_command $function_params[$_] }) -join ', ')
+                                )
+"@
+
+                            Invoke-MySqlNonQuery -SqlCommand $insert_command
+
+                            $select_command = New-MySqlCommand -Connection $connection
+                            try {
+                                $where_clause = New-MySqlWhereClause -SqlCommand $select_command -Params $function_params -PrimaryKeys $primary_keys -IdentityColumn $identity_col -FallbackColumns $payload_columns
+                                $select_command.CommandText = @"
+                                    SELECT
+                                        $projection
+                                    FROM
+                                        $quoted_class
+                                    $where_clause
+                                    LIMIT 1
+"@
+
+                                $rv = Invoke-MySqlCommand $select_command
+                                LogIO info 'INSERT' -Out $rv
+                                Log info ($rv | ConvertTo-Json)
+                                $rv
+                            }
+                            finally {
+                                Dispose-MySqlCommand $select_command
+                            }
+                        }
+                        finally {
+                            Dispose-MySqlCommand $insert_command
+                        }
+                        break
+                    }
+
+                    'Read' {
+                        $read_command = New-MySqlCommand -Connection $connection
+                        try {
+                            $where_clause = New-MySqlWhereClause -SqlCommand $read_command -Params $function_params -Columns $payload_columns -AllowEmpty
+                            $read_command.CommandText = @"
+                                SELECT
+                                    $projection
+                                FROM
+                                    $quoted_class$where_clause
+"@
+
+                            Invoke-MySqlCommand $read_command
+                        }
+                        finally {
+                            Dispose-MySqlCommand $read_command
+                        }
+                        break
+                    }
+
+                    'Update' {
+                        $update_columns = @($payload_columns | Where-Object { $_ -notin $primary_keys })
+                        if ($update_columns.Count -eq 0) {
+                            throw 'Update requires at least one non-primary-key column value.'
+                        }
+
+                        $update_command = New-MySqlCommand -Connection $connection
+                        try {
+                            $where_clause = New-MySqlWhereClause -SqlCommand $update_command -Params $function_params -Columns $primary_keys
+                            $update_command.CommandText = @"
+                                UPDATE
+                                    $quoted_class
+                                SET
+                                    $(@($update_columns | ForEach-Object { "$(ConvertTo-MySqlIdentifier -Name $_) = $(AddParam-MySqlCommand $update_command $function_params[$_])" }) -join ', ')
+                                $where_clause
+                                LIMIT 1
+"@
+
+                            Invoke-MySqlNonQuery -SqlCommand $update_command
+
+                            $select_command = New-MySqlCommand -Connection $connection
+                            try {
+                                $select_command.CommandText = @"
+                                    SELECT
+                                        $projection
+                                    FROM
+                                        $quoted_class
+                                    $(New-MySqlWhereClause -SqlCommand $select_command -Params $function_params -Columns $primary_keys)
+                                    LIMIT 1
+"@
+
+                                $rv = Invoke-MySqlCommand $select_command
+                                LogIO info 'UPDATE' -Out $rv
+                                Log info ($rv | ConvertTo-Json)
+                                $rv
+                            }
+                            finally {
+                                Dispose-MySqlCommand $select_command
+                            }
+                        }
+                        finally {
+                            Dispose-MySqlCommand $update_command
+                        }
+                        break
+                    }
+
+                    'Delete' {
+                        $delete_command = New-MySqlCommand -Connection $connection
+                        try {
+                            $delete_command.CommandText = @"
+                                DELETE FROM
+                                    $quoted_class
+                                $(New-MySqlWhereClause -SqlCommand $delete_command -Params $function_params -Columns $primary_keys)
+                                LIMIT 1
+"@
+
+                            Invoke-MySqlNonQuery -SqlCommand $delete_command
+                        }
+                        finally {
+                            Dispose-MySqlCommand $delete_command
+                        }
+                        break
+                    }
                 }
             }
-
-            $primary_keys = $Global:ColumnsInfoCache[$Class].primary_keys
-            $identity_col = $Global:ColumnsInfoCache[$Class].identity_col
-
-            $function_params = ConvertFrom-Json2 $FunctionParams
-
-            # Replace $null by [System.DBNull]::Value
-            $keys_with_null_value = @()
-            foreach ($key in $function_params.Keys) { if ($null -eq $function_params[$key]) { $keys_with_null_value += $key } }
-            foreach ($key in $keys_with_null_value) { $function_params[$key] = [System.DBNull]::Value }
-
-            $sql_command = New-MySqlCommand
-
-            $projection = if ($function_params['selected_columns'].count -eq 0) { '*' } else { @($function_params['selected_columns'] | ForEach-Object { '`' + $_ + '`'  }) -join ', ' }
-
-            switch ($Operation) {
-                'Create' {
-                    $filter = if ($identity_col) {
-                                    '`' + $identity_col + '`' + ' = LAST_INSERT_ID()'
-                                }
-                              elseif ($primary_keys) {
-                                  @($primary_keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
-                              }
-                              else {
-                                  @($function_params.Keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
-                              }
-
-                    $sql_command.CommandText = "
-                        INSERT INTO $Class (
-                            $(@($function_params.Keys | ForEach-Object { '`' + $_ + '`' }) -join ', ')
-                        )
-                        VALUES (
-                            $(@($function_params.Keys | ForEach-Object { AddParam-MySqlCommand $sql_command $function_params[$_] }) -join ', ')
-                        );
-                        SELECT
-                            $projection
-                        FROM
-                            $Class
-                        WHERE
-                            $filter
-                        LIMIT 1
-                    "
-                    break
-                }
-
-                'Read' {
-                    $filter = if ($function_params['where_clause'].length -eq 0) { '' } else { " WHERE $($function_params['where_clause'])" }
-
-                    $sql_command.CommandText = "
-                        SELECT
-                            $projection
-                        FROM
-                            $Class$filter
-                    "
-                    break
-                }
-
-                'Update' {
-                    $filter = @($primary_keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
-
-                    $sql_command.CommandText = "
-                        UPDATE
-                            $Class
-                        SET
-                            $(@($function_params.Keys | ForEach-Object { if ($_ -notin $primary_keys) { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" } }) -join ', ')
-                        WHERE
-                            $filter
-                        LIMIT 1 ;
-                        SELECT
-                            $(@($function_params.Keys | ForEach-Object { '`' + $_ + '`' }) -join ', ')
-                        FROM
-                            $Class
-                        WHERE
-                            $filter
-                        LIMIT 1
-                    "
-                    break
-                }
-
-                'Delete' {
-                    $filter = @($primary_keys | ForEach-Object { '`' + $_ + '`' + " = $(AddParam-MySqlCommand $sql_command $function_params[$_])" }) -join ' AND '
-
-                    $sql_command.CommandText = "
-                        DELETE FROM
-                            $Class
-                        WHERE
-                            $filter
-                        LIMIT 1
-                    "
-                    break
+            finally {
+                if ($connection) {
+                    Close-MySqlConnection
                 }
             }
-
-            if ($sql_command.CommandText) {
-                $deparam_command = DeParam-MySqlCommand $sql_command
-
-                LogIO info ($deparam_command -split ' ')[0] -In -Command $deparam_command
-
-                if ($Operation -eq 'Read') {
-                    # Streamed output
-                    Invoke-MySqlCommand $sql_command $deparam_command
-                }
-                else {
-                    # Log output
-                    $rv = Invoke-MySqlCommand $sql_command $deparam_command
-                    LogIO info ($deparam_command -split ' ')[0] -Out $rv
-
-                    log info ($rv | ConvertTo-Json)
-                    $rv
-                }
-            }
-
-            Dispose-MySqlCommand $sql_command
-
         }
 
     }
@@ -642,17 +700,18 @@ function Idm-Dispatcher {
     Log verbose "Done"
 }
 
-
 #
 # Helper functions
 #
 
 function New-MySqlCommand {
     param (
-        [string] $CommandText
+        [string] $CommandText,
+        $Connection
     )
 
-    $cmd = $Global:MySqlConnection.CreateCommand()
+    if (-not $Connection) { $Connection = $Global:MySqlConnection }
+    $cmd = $Connection.CreateCommand()
     $cmd.CommandText = $CommandText
     $cmd
 }
@@ -663,7 +722,61 @@ function Dispose-MySqlCommand {
         $SqlCommand
     )
 
-    $SqlCommand.Dispose()
+    if ($SqlCommand) {
+        $SqlCommand.Dispose()
+    }
+}
+
+
+function ConvertTo-MySqlIdentifier {
+    param (
+        [string] $Name
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        throw 'MySQL identifier cannot be empty.'
+    }
+
+    @($Name.Split('.') | ForEach-Object {
+        if ([string]::IsNullOrWhiteSpace($_)) {
+            throw "Invalid MySQL identifier '$Name'."
+        }
+
+        '`' + $_.Replace('`', '``') + '`'
+    }) -join '.'
+}
+
+
+function ConvertTo-MySqlProjection {
+    param (
+        [string[]] $SelectedColumns,
+        [string[]] $AvailableColumns
+    )
+
+    if (-not $SelectedColumns -or $SelectedColumns.Count -eq 0) {
+        return '*'
+    }
+
+    $invalid_columns = @($SelectedColumns | Where-Object { $_ -notin $AvailableColumns })
+    if ($invalid_columns.Count -gt 0) {
+        throw "Unknown selected column(s): $($invalid_columns -join ', ')"
+    }
+
+    @($SelectedColumns | ForEach-Object { ConvertTo-MySqlIdentifier -Name $_ }) -join ', '
+}
+
+
+function Get-MySqlObjectInfo {
+    param (
+        [string] $Class
+    )
+
+    $sql_object = $Global:SqlInfoCache.Objects | Where-Object { $_.full_name -eq $Class } | Select-Object -First 1
+    if (-not $sql_object) {
+        throw "Unsupported class '$Class'."
+    }
+
+    $sql_object
 }
 
 
@@ -680,6 +793,57 @@ function AddParam-MySqlCommand {
     $SqlCommand.Parameters.Add($p) | Out-Null
 
     return $param_name
+}
+
+
+function New-MySqlWhereClause {
+    param (
+        $SqlCommand,
+        $Params,
+        [string[]] $Columns,
+        [string[]] $PrimaryKeys,
+        [string] $IdentityColumn,
+        [string[]] $FallbackColumns,
+        [switch] $AllowEmpty
+    )
+
+    if (-not $Columns -or $Columns.Count -eq 0) {
+        if ($IdentityColumn) {
+            return " WHERE $(ConvertTo-MySqlIdentifier -Name $IdentityColumn) = LAST_INSERT_ID()"
+        }
+
+        if ($PrimaryKeys -and $PrimaryKeys.Count -gt 0) {
+            $Columns = $PrimaryKeys
+        }
+        else {
+            $Columns = $FallbackColumns
+        }
+    }
+
+    $predicates = foreach ($column in $Columns) {
+        if ($column -notin $Params.Keys) {
+            continue
+        }
+
+        $quoted_column = ConvertTo-MySqlIdentifier -Name $column
+        if ($Params[$column] -eq [System.DBNull]::Value) {
+            "$quoted_column IS NULL"
+        }
+        else {
+            "$quoted_column = $(AddParam-MySqlCommand $SqlCommand $Params[$column])"
+        }
+    }
+
+    $predicates = @($predicates)
+    if ($predicates.Count -eq 0) {
+        if ($AllowEmpty) {
+            return ''
+        }
+
+        throw 'A WHERE clause could not be built from the supplied parameters.'
+    }
+
+    " WHERE $($predicates -join ' AND ')"
 }
 
 
@@ -733,21 +897,23 @@ function Invoke-MySqlCommand {
         [string] $DeParamCommand
     )
 
-    # Streaming
     function Invoke-MySqlCommand-ExecuteReader {
         param (
             $SqlCommand
         )
+
         $data_reader = $SqlCommand.ExecuteReader()
-        $column_names = @($data_reader.GetSchemaTable().ColumnName)
+        try {
+            $column_names = for ($i = 0; $i -lt $data_reader.FieldCount; $i++) {
+                $data_reader.GetName($i)
+            }
 
-        if ($column_names) {
-            while ($data_reader.Read()) {
-                $hash_table = [ordered]@{}
+            if ($column_names) {
+                while ($data_reader.Read()) {
+                    $hash_table = [ordered]@{}
 
-                foreach ($column_name in $column_names) {
-                    
-                    $value_txt = if ($data_reader[$column_name] -eq [System.DBNull]::Value) {
+                    foreach ($column_name in $column_names) {
+                        $value_txt = if ($data_reader[$column_name] -eq [System.DBNull]::Value) {
                                         $null
                                     }
                                     elseif ($data_reader[$column_name] -is [DateTime]) {
@@ -767,33 +933,31 @@ function Invoke-MySqlCommand {
                                         "$($parsed.ToString('yyyy-MM-dd HH:mm:ss'))"
                                     }
                                     else {
-                                        $val = $data_reader[$column_name].ToString()
                                         if ($data_reader[$column_name] -is [string]) {
                                             "$($data_reader[$column_name])"
                                         } else {
                                             $data_reader[$column_name]
                                         }
                                     }
-                    
-                    #$hash_table[$column_name] = if ($data_reader[$column_name] -is [System.DBNull]) { $null } else { $data_reader[$column_name] }
-                    $hash_table[$column_name] = $value_txt
+
+                        $hash_table[$column_name] = $value_txt
+                    }
+
+                    New-Object -TypeName PSObject -Property $hash_table
                 }
-
-                New-Object -TypeName PSObject -Property $hash_table
             }
-
         }
-
-        $data_reader.Close()
+        finally {
+            $data_reader.Dispose()
+        }
     }
 
-    if (! $DeParamCommand) {
+    if (-not $DeParamCommand) {
         $DeParamCommand = DeParam-MySqlCommand $SqlCommand
-        
     }
-    
+
+    LogIO info ($DeParamCommand -split ' ')[0] -In -Command $DeParamCommand
     Log debug $DeParamCommand
-    $SqlCommand.CommandText = $DeparamCommand
 
     try {
         Invoke-MySqlCommand-ExecuteReader $SqlCommand
@@ -801,19 +965,45 @@ function Invoke-MySqlCommand {
     catch {
         Log error "Failed: $_"
         Write-Error $_
+        throw
     }
 
     Log debug "Done"
 }
 
 
+function Invoke-MySqlNonQuery {
+    param (
+        $SqlCommand,
+        [string] $DeParamCommand
+    )
+
+    if (-not $DeParamCommand) {
+        $DeParamCommand = DeParam-MySqlCommand $SqlCommand
+    }
+
+    LogIO info ($DeParamCommand -split ' ')[0] -In -Command $DeParamCommand
+    Log debug $DeParamCommand
+
+    try {
+        [void]$SqlCommand.ExecuteNonQuery()
+    }
+    catch {
+        Log error "Failed: $_"
+        Write-Error $_
+        throw
+    }
+
+    Log debug "Done"
+}
+
 function Open-MySqlConnection {
     param (
         [string] $ConnectionParams
     )
+
     $connection_params = ConvertFrom-Json2 $ConnectionParams
 
-    # Build connection string using MySqlConnectionStringBuilder (SimplySQL pattern)
     $sb = New-Object MySqlConnector.MySqlConnectionStringBuilder
     $sb.Server = $connection_params.server
     $sb.Port = [int]$connection_params.port
@@ -828,40 +1018,27 @@ function Open-MySqlConnection {
     if ($connection_params.ssl_mode) {
         $sb.SslMode = [MySqlConnector.MySqlSslMode]::Preferred
     }
+
     $connection_string = $sb.ToString()
 
-    if ($Global:MySqlConnection -and $connection_string -ne $Global:MySqlConnectionString) {
-        Log verbose "MySqlConnection connection parameters changed"
-        Close-MySqlConnection
+    Log verbose "Opening MySqlConnection server='$($sb.Server)'; port='$($sb.Port)'; database='$($sb.Database)'; user='$($sb.UserID)'; ssl_mode='$($sb.SslMode)'"
+
+    try {
+        $connection = New-Object MySqlConnector.MySqlConnection($connection_string)
+        $connection.Open()
+
+        $Global:MySqlConnection = $connection
+        $Global:MySqlConnectionString = $connection_string
+
+        $Global:ColumnsInfoCache = @{}
+        $Global:SqlInfoCache = @{}
+
+        return $connection
     }
-
-    if ($Global:MySqlConnection -and $Global:MySqlConnection.State -ne 'Open') {
-        Log warn "MySqlConnection State is '$($Global:MySqlConnection.State)'"
-        Close-MySqlConnection
-    }
-
-    if ($Global:MySqlConnection) {
-        Log debug "Reusing MySqlConnection"
-    }
-    else {
-        Log verbose "Opening MySqlConnection '$connection_string'"
-
-        try {
-            $connection = New-Object MySqlConnector.MySqlConnection($connection_string)
-            $connection.Open()
-
-            $Global:MySqlConnection       = $connection
-            $Global:MySqlConnectionString = $connection_string
-
-            $Global:ColumnsInfoCache = @{}
-            $Global:SqlInfoCache = @{}
-        }
-        catch {
-            Log error "Failed: $_"
-            Write-Error $_
-        }
-
-        Log verbose "Done"
+    catch {
+        Log error "Failed: $_"
+        Write-Error $_
+        throw
     }
 }
 
@@ -872,7 +1049,9 @@ function Close-MySqlConnection {
 
         try {
             $Global:MySqlConnection.Close()
+            $Global:MySqlConnection.Dispose()
             $Global:MySqlConnection = $null
+            $Global:MySqlConnectionString = $null
         }
         catch {
             # Purposely ignoring errors
@@ -881,3 +1060,5 @@ function Close-MySqlConnection {
         Log verbose "Done"
     }
 }
+
+
